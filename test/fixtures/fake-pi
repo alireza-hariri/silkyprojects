@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Stand-in for `pi --mode json`: echoes the prompt back as the answer.
+# A prompt containing SLEEP<n> sleeps n seconds after the tool call; FAIL exits 2.
+sid=$(cat /proc/sys/kernel/random/uuid)
+while [ $# -gt 0 ]; do
+	case $1 in --session) sid=$2; shift 2 ;; *) shift ;; esac
+done
+prompt=$(cat)
+esc=$(printf '%s' "$prompt" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8")))')
+echo "{\"type\":\"session\",\"version\":3,\"id\":\"$sid\",\"cwd\":\"$PWD\"}"
+echo '{"type":"agent_start"}'
+echo '{"type":"tool_execution_start","toolCallId":"t1","toolName":"bash","args":{"command":"ls"}}'
+echo '{"type":"tool_execution_end","toolCallId":"t1","toolName":"bash","result":{"content":[{"type":"text","text":"a.txt"}]},"isError":false}'
+if [[ $prompt =~ SLEEP([0-9]+) ]]; then sleep "${BASH_REMATCH[1]}"; fi
+if [[ $prompt == *FAIL* ]]; then echo "boom: provider error" >&2; exit 2; fi
+echo "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"echo($sid): \"},{\"type\":\"text\",\"text\":$esc}],\"stopReason\":\"stop\"}}"
+echo '{"type":"agent_end","messages":[]}'

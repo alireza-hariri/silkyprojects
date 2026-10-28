@@ -1,0 +1,15 @@
+# Install: cp contrib/silky.service ~/.config/systemd/user/
+#          systemctl --user daemon-reload && systemctl --user enable --now silky
+# Settings live in ~/.config/silky/env (see contrib/env.example).
+[Unit]
+Description=silky: Telegram manager for pi agents in tmux
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/silky/env
+ExecStart=%h/repos/silkyprojects/bin/silky daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

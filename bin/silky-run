@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# One pi run for one agent. Started by silky inside the agent's tmux window.
+# usage: silky-run <agent-dir> <run-id> [session-id]
+set -u
+
+agent_dir=$1
+run=$2
+sid=${3:-}
+runs="$agent_dir/runs"
+here=$(dirname "$(readlink -f "$0")")
+pi=${SILKY_PI:-pi}
+node=${SILKY_NODE:-node}
+
+mkdir -p "$runs"
+echo $$ > "$runs/$run.pid"
+cp "$agent_dir/prompt.md" "$runs/$run.prompt.md"
+
+# Ctrl-C (/stop) kills the pipeline; still record how the run ended.
+finish() { echo "$1" > "$runs/$run.exit"; exit "$1"; }
+trap 'finish 130' INT
+trap 'finish 143' TERM
+
+args=(--mode json)
+[ -n "$sid" ] && args+=(--session "$sid")
+
+"$pi" "${args[@]}" < "$runs/$run.prompt.md" 2> >(tee -a "$runs/$run.err" >&2) \
+	| tee -a "$runs/$run.jsonl" \
+	| "$node" "$here/silky-pretty.mjs"
+finish "${PIPESTATUS[0]}"
