@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Stand-in for ssh: drops options and the host, runs the command locally.
+while [ $# -gt 0 ]; do
+	case $1 in
+	-O) exit 0 ;;
+	-o|-l|-p) shift 2 ;;
+	-*) shift ;;
+	*) break ;;
+	esac
+done
+shift
+exec sh -c "$*"

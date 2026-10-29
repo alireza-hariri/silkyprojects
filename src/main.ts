@@ -3,25 +3,36 @@ import { loadConfig } from "./config.ts";
 
 // pi's CLI does the same: Node's 250ms default drops valid connections on high-latency routes.
 net.setDefaultAutoSelectFamilyAttemptTimeout(2000);
-import { Silky } from "./core.ts";
+import { Silky, TEMPLATES, type Template } from "./core.ts";
 
 const USAGE = `usage: silky <command>
 
   daemon                          run the Telegram bot (needs TELEGRAM_BOT_TOKEN)
   status                          list projects and agents
   reconcile                       repair .silky and tmux from the project folders
-  create-project <name>           create a project and its first agent
+  create-project <name> [empty|git|git-data]
+                                  create a project (from a template) and its first agent
   create-agent <project>          add an agent to a project
   send <project> <agent> <text>   run a prompt and wait for the answer
   stop <project> <agent>          Ctrl-C the agent's current run
   clear <project> <agent>         start a fresh pi session on the next run
   archive-agent <project> <agent> kill the agent's window and archive it
+  sync [user@host:/path] [--dry-run] [--force]
+                                  sync PROJECTS_DIR with a server (docs/sync.md);
+                                  the server is remembered after the first run
 
 Environment: PROJECTS_DIR (required), SILKY_PI (pi binary, default: pi on PATH)`;
 
 async function main(argv: string[]): Promise<void> {
 	const [cmd, ...args] = argv;
 	if (!cmd || cmd === "help" || cmd === "--help") return console.log(USAGE);
+
+	if (cmd === "sync") {
+		const { sync } = await import("./sync.ts");
+		const flags = new Set(args.filter((a) => a.startsWith("--")));
+		for (const f of flags) if (f !== "--dry-run" && f !== "--force") throw new Error(USAGE);
+		return sync(loadConfig(), { remote: args.find((a) => !a.startsWith("--")), dryRun: flags.has("--dry-run"), force: flags.has("--force") });
+	}
 
 	const silky = new Silky(loadConfig());
 	if (cmd === "daemon") {
@@ -49,7 +60,9 @@ async function main(argv: string[]): Promise<void> {
 		case "create-project": {
 			need(1);
 			await silky.start();
-			const { agent, existed } = await silky.createProject(args[0]);
+			const template = args[1] ?? "empty";
+			if (!(TEMPLATES as readonly string[]).includes(template)) throw new Error(USAGE);
+			const { agent, existed } = await silky.createProject(args[0], template as Template);
 			console.log(`${existed ? "existing" : "created"} project ${args[0]}, agent ${agent}`);
 			break;
 		}

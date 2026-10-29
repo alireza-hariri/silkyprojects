@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -178,5 +178,24 @@ test("folder without metadata is a project with zero agents; held answers stack"
 	await silky.hold(p, agent, "two", true);
 	assert.deepEqual(await silky.takeHeld(p, agent), { text: "two", ok: true, earlier: 1 });
 	assert.equal(await silky.takeHeld(p, agent), null);
+	silky.stopAll();
+});
+
+test("templates and where received files go", async () => {
+	const silky = make();
+	await silky.start();
+	const plain = `${prefix}-plain`;
+	const withData = `${prefix}-gd`;
+	await silky.createProject(plain, "git");
+	await silky.createProject(withData, "git-data");
+	assert.ok(existsSync(join(dir, plain, ".git")) && !existsSync(join(dir, plain, "data")));
+	assert.equal(execFileSync("git", ["-C", join(dir, withData), "check-ignore", "data/"], { encoding: "utf8" }).trim(), "data/");
+
+	const big = 21 * 1024 * 1024;
+	assert.equal(await silky.attachmentPath(plain, "a b.png", big), join(dir, plain, "raw/assets/a_b.png"), "no data/: assets");
+	assert.equal(await silky.attachmentPath(withData, "x.png", 10), join(dir, withData, "raw/assets/x.png"));
+	assert.equal(await silky.attachmentPath(withData, "../x.mp4", big), join(dir, withData, "data/x.mp4"));
+	writeFileSync(join(dir, withData, "data/x.mp4"), "");
+	assert.equal(await silky.attachmentPath(withData, "x.mp4", big), join(dir, withData, "data/x-1.mp4"), "never overwrites");
 	silky.stopAll();
 });

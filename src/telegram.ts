@@ -1,6 +1,11 @@
 import { randomBytes } from "node:crypto";
+import { createWriteStream, existsSync } from "node:fs";
+import { copyFile, rm } from "node:fs/promises";
+import { isAbsolute, relative } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
-import type { Silky, SilkyEvent } from "./core.ts";
+import { BIG_FILE, type Silky, type SilkyEvent, type Template } from "./core.ts";
 import { clip, escapeHtml, LONG_OUTPUT, markdownToHtml, oneLine, toolSummary } from "./format.ts";
 import { type Controller, Manager } from "./manager.ts";
 import { type Active, timestamp } from "./store.ts";
@@ -8,6 +13,20 @@ import { type Active, timestamp } from "./store.ts";
 const GATEWAY = "telegram";
 const STATUS_EDIT_MS = 1500;
 const MANAGER_KEY = "manager";
+const DEFAULT_API_ROOT = "https://api.telegram.org";
+
+const TEMPLATE_LABELS: [Template, string][] = [
+	["empty", "Empty folder"],
+	["git", "Git"],
+	["git-data", "Git + data dir"],
+];
+
+interface Incoming {
+	fileId: string;
+	name: string;
+	size: number;
+	caption?: string;
+}
 
 const COMMANDS = [
 	["create_project", "Create a project and its first agent"],
@@ -43,10 +62,15 @@ export class TelegramGateway implements Controller {
 	private statusLines = new Map<string, StatusLine>();
 	/** Inline-button payloads, so callback data stays under Telegram's 64 bytes. */
 	private callbacks = new Map<string, () => Promise<void>>();
+	private token: string;
+	/** A local Bot API server (TELEGRAM_API_ROOT) lifts Telegram's 20 MB download limit. */
+	private apiRoot: string;
 
-	constructor(silky: Silky, token: string) {
+	constructor(silky: Silky, token: string, apiRoot = DEFAULT_API_ROOT) {
 		this.silky = silky;
-		this.bot = new Bot(token);
+		this.token = token;
+		this.apiRoot = apiRoot.replace(/\/+$/, "");
+		this.bot = new Bot(token, { client: { apiRoot: this.apiRoot } });
 		this.manager = new Manager(silky, this);
 		this.manager.onTool = (name, args) => this.statusTool(MANAGER_KEY, name, args);
 		silky.on((e) => void this.onEvent(e).catch((err) => console.error("event handling failed", err)));
@@ -111,6 +135,12 @@ export class TelegramGateway implements Controller {
 			} catch (err) {
 				await this.sendHtml(`✗ ${escapeHtml(err instanceof Error ? err.message : String(err))}`);
 			}
+		});
+
+		bot.on(["message:document", "message:photo", "message:video", "message:audio", "message:voice"], (ctx) => {
+			const incoming = describeFile(ctx);
+			if (!incoming) return;
+			void this.onFile(incoming).catch((err) => this.sendHtml(`✗ ${escapeHtml(String(err?.message ?? err))}`));
 		});
 
 		bot.on("message:text", (ctx) => {
@@ -285,6 +315,37 @@ export class TelegramGateway implements Controller {
 		}
 	}
 
+	/** Saves a received file into the active project; a caption is sent on to the agent along with the path. */
+	private async onFile(f: Incoming): Promise<void> {
+		await this.silky.reconcile();
+		const a = await this.active();
+		if (a.mode !== "agent") return void (await this.sendHtml("Files go to a project: pick one first with /proj."));
+		const local = this.apiRoot !== DEFAULT_API_ROOT;
+		if (f.size > BIG_FILE && !local) {
+			return void (await this.sendHtml(
+				`✗ ${escapeHtml(f.name)} is over 20 MB, which Telegram's Bot API can't download. Run a local Bot API server and set TELEGRAM_API_ROOT.`,
+			));
+		}
+		const dest = await this.silky.attachmentPath(a.project, f.name, f.size);
+		const file = await this.bot.api.getFile(f.fileId);
+		if (!file.file_path) throw new Error("Telegram returned no file path.");
+		try {
+			// A local Bot API server in --local mode hands out a path on its own disk.
+			if (isAbsolute(file.file_path) && existsSync(file.file_path)) await copyFile(file.file_path, dest);
+			else {
+				const res = await fetch(`${this.apiRoot}/file/bot${this.token}/${file.file_path}`);
+				if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
+				await pipeline(Readable.fromWeb(res.body as any), createWriteStream(dest));
+			}
+		} catch (err) {
+			await rm(dest, { force: true });
+			throw err;
+		}
+		const rel = relative(this.silky.folder(a.project), dest);
+		await this.sendHtml(`📎 Saved to <code>${escapeHtml(rel)}</code>`);
+		if (f.caption) await this.onText(`${f.caption}\n\n(Attached file: ${rel})`);
+	}
+
 	// ── Commands ─────────────────────────────────────────────────────────────
 
 	private async cmdStart(ctx: Context): Promise<void> {
@@ -307,7 +368,10 @@ export class TelegramGateway implements Controller {
 
 	private async cmdCreateProject(name: string): Promise<void> {
 		if (!name) return void (await this.sendHtml("Usage: /create_project &lt;name&gt;"));
-		await this.sendHtml(escapeHtml(await this.createProject(name)));
+		// An existing folder is adopted as is, so there is nothing to choose.
+		if (this.silky.projectExists(name)) return void (await this.sendHtml(escapeHtml(await this.createProject(name))));
+		const buttons = TEMPLATE_LABELS.map(([t, label]) => this.button(label, async () => void (await this.sendHtml(escapeHtml(await this.createProject(name, t))))));
+		await this.sendHtml(`How should <b>${escapeHtml(name)}</b> start?`, this.keyboard(buttons, 1));
 	}
 
 	private async cmdProj(name: string): Promise<void> {
@@ -382,8 +446,8 @@ export class TelegramGateway implements Controller {
 		return lines.join("\n") || "No projects yet.";
 	}
 
-	async createProject(name: string): Promise<string> {
-		const { agent, existed } = await this.silky.createProject(name);
+	async createProject(name: string, template?: Template): Promise<string> {
+		const { agent, existed } = await this.silky.createProject(name, template);
 		const done = await this.setActive(name, agent);
 		return `${existed ? `Project ${name} already existed.` : `Created project ${name}.`} ${done}`;
 	}
@@ -420,4 +484,20 @@ export class TelegramGateway implements Controller {
 		const res = await this.silky.send(project, agent, text);
 		return "queued" in res ? `Queued (${res.queued}) behind the current run of ${agent}.` : `Started a run on ${agent}.`;
 	}
+}
+
+function describeFile(ctx: Context): Incoming | undefined {
+	const m = ctx.message;
+	if (!m) return;
+	const caption = m.caption?.trim() || undefined;
+	const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
+	if (m.photo?.length) {
+		const p = m.photo.at(-1)!;
+		return { fileId: p.file_id, name: `photo-${stamp}.jpg`, size: p.file_size ?? 0, caption };
+	}
+	const f = m.document ?? m.video ?? m.audio ?? m.voice;
+	if (!f) return;
+	const ext = f.mime_type?.split("/")[1]?.replace(/[^a-z0-9]/g, "") || "bin";
+	const name = ("file_name" in f && f.file_name) || `${m.voice ? "voice" : "file"}-${stamp}.${m.voice ? "ogg" : ext}`;
+	return { fileId: f.file_id, name, size: f.file_size ?? 0, caption };
 }

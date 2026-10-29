@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
+import { promisify } from "node:util";
 import type { Config } from "./config.ts";
 import { type AgentMeta, type Held, type ProjectMeta, Store, listDirs, timestamp, tmuxName } from "./store.ts";
 import * as tmux from "./tmux.ts";
@@ -25,6 +27,13 @@ export interface ProjectStatus {
 }
 
 export type SendResult = { started: true } | { queued: number };
+
+/** How a new project folder starts: empty, `git init` + `raw/assets/`, or that plus a gitignored `data/`. */
+export const TEMPLATES = ["empty", "git", "git-data"] as const;
+export type Template = (typeof TEMPLATES)[number];
+
+/** Files bigger than this go to `data/` (when the project has one) instead of `raw/assets/`, to keep them out of git. */
+export const BIG_FILE = 20 * 1024 * 1024;
 
 const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 /** A run whose script hasn't written its pid file by then never started. */
@@ -84,6 +93,10 @@ export class Silky {
 
 	folder(project: string): string {
 		return join(this.config.projectsDir, project);
+	}
+
+	projectExists(project: string): boolean {
+		return PROJECT_NAME.test(project) && existsSync(this.folder(project));
 	}
 
 	async start(): Promise<void> {
@@ -193,17 +206,31 @@ export class Silky {
 
 	// ── Projects and agents ──────────────────────────────────────────────────
 
-	/** Creates the folder if needed and makes sure the project has at least one agent. */
-	createProject(name: string): Promise<{ agent: string; existed: boolean }> {
+	/** Creates the folder from a template if needed (an existing folder is adopted as is) and makes sure the project has at least one agent. */
+	createProject(name: string, template: Template = "empty"): Promise<{ agent: string; existed: boolean }> {
 		return this.lock(async () => {
 			if (!PROJECT_NAME.test(name)) {
 				throw new Error("Project names use letters, digits, '.', '_' or '-', start with a letter or digit, and are at most 40 characters.");
 			}
 			const existed = existsSync(this.folder(name));
-			await mkdir(this.folder(name), { recursive: true });
+			if (!existed) await applyTemplate(this.folder(name), template);
 			const agents = await this.store.agents(name);
 			return { agent: agents[0] ?? (await this.doCreateAgent(name)), existed };
 		});
+	}
+
+	/** Where a received file goes: `data/` if it is big and the project has one, else `raw/assets/`. Never overwrites. */
+	async attachmentPath(project: string, fileName: string, size: number): Promise<string> {
+		const folder = this.folder(project);
+		if (!existsSync(folder)) throw new Error(`No project named ${project}.`);
+		const dir = size > BIG_FILE && existsSync(join(folder, "data")) ? join(folder, "data") : join(folder, "raw", "assets");
+		await mkdir(dir, { recursive: true });
+		const safe = basename(fileName).replace(/[^\w.+-]/g, "_").replace(/^\.+/, "") || "file";
+		const ext = extname(safe);
+		const stem = safe.slice(0, safe.length - ext.length);
+		let path = join(dir, safe);
+		for (let i = 1; existsSync(path); i++) path = join(dir, `${stem}-${i}${ext}`);
+		return path;
 	}
 
 	/** Returns the project's first agent, creating one if it has none. */
@@ -503,4 +530,17 @@ function recoverLastText(file: string, upTo: number): string {
 		}
 	} catch {}
 	return "";
+}
+
+async function applyTemplate(folder: string, template: Template): Promise<void> {
+	await mkdir(folder, { recursive: true });
+	if (template === "empty") return;
+	await promisify(execFile)("git", ["init", "-q", folder]);
+	// git doesn't track empty folders, so .gitkeep makes raw/assets/ exist in every clone.
+	await mkdir(join(folder, "raw", "assets"), { recursive: true });
+	await writeFile(join(folder, "raw", "assets", ".gitkeep"), "");
+	if (template === "git-data") {
+		await mkdir(join(folder, "data"));
+		await writeFile(join(folder, ".gitignore"), "/data/\n");
+	}
 }

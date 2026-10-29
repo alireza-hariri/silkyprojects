@@ -30,7 +30,7 @@ for example `· myproj / myproj-agent-2 ·`.
 
 | Command | |
 |---|---|
-| `/create_project <name>` | Create the folder (or adopt an existing one), its first agent, and switch to it |
+| `/create_project <name>` | Create the folder from a template (or adopt an existing one), its first agent, and switch to it |
 | `/proj [name]` | Switch project; buttons if no name |
 | `/create_agent` | Add an agent to the current project |
 | `/agent [name]` | Switch agent; buttons if no name |
@@ -44,7 +44,27 @@ for example `· myproj / myproj-agent-2 ·`.
 - Agents you aren't looking at send a one-line ping when they finish; the answer is held until
   you switch to them.
 - Answers over 3500 characters come as a short preview plus a `.md` file.
+- Files and photos you send are saved into the active project (see below). A caption is sent to
+  the agent together with the saved path.
 - `tmux attach -t <project>` shows a readable log of every run.
+
+## Project templates and files
+
+`/create_project` asks how a new folder should start:
+
+| Template | What you get |
+|---|---|
+| Empty folder | just the folder |
+| Git | `git init` and `raw/assets/` (kept in git with a `.gitkeep`) |
+| Git + data dir | the same, plus `data/`, which `.gitignore` keeps out of git |
+
+A file you send goes to `raw/assets/`. If it is over 20 MB and the project has a `data/` dir, it
+goes to `data/` instead, so big files stay out of git. Existing files are never overwritten
+(`name-1.ext`, …).
+
+Telegram's public Bot API can't download files over 20 MB. To receive bigger ones, run a
+[local Bot API server](https://github.com/tdlib/telegram-bot-api) with `--local` and set
+`TELEGRAM_API_ROOT` (for example `http://localhost:8081`).
 
 ## CLI
 
@@ -52,13 +72,23 @@ The same core without Telegram, useful for testing:
 
 ```bash
 bin/silky status
-bin/silky create-project demo
+bin/silky create-project demo git-data   # template: empty (default), git, git-data
 bin/silky send demo demo-agent-1 "what is in this folder?"
 bin/silky help
 ```
 
 Don't run CLI commands that change state while the daemon is running: only one process should
 write `.silky`.
+
+## Sync with a server
+
+```bash
+bin/silky sync me@server:~/projects   # first time; the server is remembered
+bin/silky sync                        # later runs
+```
+
+Git repos get a `git pull` on both sides, and everything else is synced with rsync, newer file
+wins. Details: [docs/sync.md](docs/sync.md).
 
 ## Development
 

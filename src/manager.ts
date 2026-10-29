@@ -7,13 +7,13 @@ import {
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { Silky } from "./core.ts";
+import type { Silky, Template } from "./core.ts";
 import { messageText } from "./core.ts";
 
 /** What the manager can do to the gateway that talks to it. Commands use the same functions. */
 export interface Controller {
 	status(): Promise<string>;
-	createProject(name: string): Promise<string>;
+	createProject(name: string, template?: Template): Promise<string>;
 	createAgent(project: string): Promise<string>;
 	archiveAgent(project: string, agent: string): Promise<string>;
 	setActive(project?: string, agent?: string): Promise<string>;
@@ -48,8 +48,15 @@ function tools(c: Controller) {
 			name: "create_project",
 			label: "Create project",
 			description: "Create a project folder (or adopt an existing one), give it a first agent and make it active.",
-			parameters: Type.Object({ name: Type.String({ description: "Folder name: letters, digits, '.', '_', '-'" }) }),
-			execute: async (_id, p) => text(await c.createProject(p.name)),
+			parameters: Type.Object({
+				name: Type.String({ description: "Folder name: letters, digits, '.', '_', '-'" }),
+				template: Type.Optional(
+					Type.Union([Type.Literal("empty"), Type.Literal("git"), Type.Literal("git-data")], {
+						description: "New folders only. empty (default); git: git init + raw/assets/; git-data: git plus a gitignored data/ for big files",
+					}),
+				),
+			}),
+			execute: async (_id, p) => text(await c.createProject(p.name, p.template)),
 		}),
 		defineTool({
 			name: "create_agent",
