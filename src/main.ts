@@ -1,4 +1,5 @@
 import net from "node:net";
+import { readFileSync } from "node:fs";
 import { loadConfig } from "./config.ts";
 
 // pi's CLI does the same: Node's 250ms default drops valid connections on high-latency routes.
@@ -23,9 +24,12 @@ const USAGE = `usage: silky <command>
 
 Environment: PROJECTS_DIR (required), SILKY_PI (pi binary, default: pi on PATH, else next to node)`;
 
+const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
+
 async function main(argv: string[]): Promise<void> {
 	const [cmd, ...args] = argv;
 	if (!cmd || cmd === "help" || cmd === "--help") return console.log(USAGE);
+	if (cmd === "version" || cmd === "--version" || cmd === "-V") return console.log(`silky ${VERSION}`);
 
 	if (cmd === "sync") {
 		const { sync } = await import("./sync.ts");

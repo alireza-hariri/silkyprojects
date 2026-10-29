@@ -1,6 +1,6 @@
 {
   "name": "silky",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "Telegram-driven manager for pi agents running in tmux",
