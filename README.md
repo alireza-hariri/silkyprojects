@@ -12,6 +12,16 @@ Design: [docs/plan.md](docs/plan.md).
 - tmux 3.0+
 - [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) on `PATH`, with a model configured
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alireza-hariri/silkyprojects/main/install.sh | sh
+```
+
+This downloads the latest release (or the `main` branch), installs dependencies, and links
+`silky` into `~/.local/bin`. Override the paths with `SILKY_PREFIX` and `SILKY_BIN`, e.g.
+`sudo env SILKY_PREFIX=/usr/local/share/silky SILKY_BIN=/usr/local/bin sh -c "$(curl -fsSL ...)"`.
+
 ## Setup
 
 ```bash
