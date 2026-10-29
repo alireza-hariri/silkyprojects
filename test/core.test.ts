@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { loadConfig, ROOT } from "../src/config.ts";
 import { Silky, type SilkyEvent } from "../src/core.ts";
+import { SOCKET } from "../src/tmux.ts";
 
 // Every test session gets a unique prefix so a real tmux server is safe to share.
 const prefix = `t${process.pid}`;
@@ -28,7 +29,7 @@ function next(silky: Silky, type: SilkyEvent["type"], agent?: string): Promise<S
 
 const sessions = () => {
 	try {
-		return execFileSync("tmux", ["list-sessions", "-F", "#{session_name}"], { encoding: "utf8" }).split("\n");
+		return execFileSync("tmux", ["-L", SOCKET, "list-sessions", "-F", "#{session_name}"], { encoding: "utf8" }).split("\n");
 	} catch {
 		return [];
 	}
@@ -39,7 +40,7 @@ before(() => {
 });
 
 after(() => {
-	for (const s of sessions()) if (s.startsWith(prefix)) execFileSync("tmux", ["kill-session", "-t", `=${s}`]);
+	for (const s of sessions()) if (s.startsWith(prefix)) execFileSync("tmux", ["-L", SOCKET, "kill-session", "-t", `=${s}`]);
 	rmSync(dir, { recursive: true, force: true });
 });
 
@@ -135,7 +136,7 @@ test("restart after the window died marks the run interrupted", async () => {
 	await first.send(p, agent, "SLEEP30");
 	await tool;
 	first.stopAll();
-	execFileSync("tmux", ["kill-session", "-t", `=${p}`]);
+	execFileSync("tmux", ["-L", SOCKET, "kill-session", "-t", `=${p}`]);
 
 	const second = make();
 	const interrupted = next(second, "interrupted", agent);

@@ -7,6 +7,7 @@ import { after, test } from "node:test";
 import { loadConfig, ROOT } from "../src/config.ts";
 import { Silky } from "../src/core.ts";
 import { TelegramGateway } from "../src/telegram.ts";
+import { SOCKET } from "../src/tmux.ts";
 
 const OWNER = 42;
 const p = `tg${process.pid}`;
@@ -14,7 +15,7 @@ const dir = mkdtempSync(join(tmpdir(), "silky-tg-"));
 
 after(() => {
 	try {
-		execFileSync("tmux", ["kill-session", "-t", `=${p}`]);
+		execFileSync("tmux", ["-L", SOCKET, "kill-session", "-t", `=${p}`]);
 	} catch {}
 	rmSync(dir, { recursive: true, force: true });
 });

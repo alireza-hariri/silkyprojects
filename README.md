@@ -20,6 +20,10 @@ export PROJECTS_DIR=~/projects TELEGRAM_BOT_TOKEN=... SILKY_OWNER_ID=<your teleg
 bin/silky daemon
 ```
 
+Settings can also go in a `.env` at the repo root (see [contrib/env.example](contrib/env.example));
+`bin/silky` loads it. To run `silky` from anywhere, link it into a bin dir on your `PATH`:
+`ln -s "$PWD/bin/silky" ~/.local/bin/silky`.
+
 Then send `/start` to the bot. The first user to do so becomes the owner (only `SILKY_OWNER_ID`,
 if set); everyone else is ignored. To run it as a service, see [contrib/silky.service](contrib/silky.service).
 
@@ -46,7 +50,9 @@ for example `· myproj / myproj-agent-2 ·`.
 - Answers over 3500 characters come as a short preview plus a `.md` file.
 - Files and photos you send are saved into the active project (see below). A caption is sent to
   the agent together with the saved path.
-- `tmux attach -t <project>` shows a readable log of every run.
+- `tmux -L silky attach -t <project>` shows a readable log of every run. silky runs its own tmux
+  server on the `silky` socket (`SILKY_TMUX_SOCKET` to change it), so its sessions stay out of
+  your default `tmux ls`.
 
 ## Project templates and files
 
@@ -65,6 +71,15 @@ goes to `data/` instead, so big files stay out of git. Existing files are never 
 Telegram's public Bot API can't download files over 20 MB. To receive bigger ones, run a
 [local Bot API server](https://github.com/tdlib/telegram-bot-api) with `--local` and set
 `TELEGRAM_API_ROOT` (for example `http://localhost:8081`).
+
+### When Telegram is unreachable
+
+silky talks to Telegram directly. When a request can't connect, it reads a proxy URL from
+`~/.proxyaddr` (or `SILKY_PROXY_FILE`), checks it by fetching `https://telegram.org/robots.txt`,
+and switches to it. The file is read again each time the current route fails, so a proxy that
+changes over time is picked up; `http://` and `socks5h://` URLs both work. Every 10 minutes on a
+proxy it checks whether the direct route is back. With a local `TELEGRAM_API_ROOT` there is no
+fallback.
 
 ## CLI
 

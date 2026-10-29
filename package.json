@@ -7,17 +7,21 @@
   "bin": { "silky": "bin/silky" },
   "engines": { "node": ">=24" },
   "scripts": {
-    "start": "node src/main.ts daemon",
+    "start": "node --env-file-if-exists=.env src/main.ts daemon",
     "typecheck": "tsc",
     "test": "node --test test/*.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.84.1",
     "grammy": "^1.46.0",
+    "https-proxy-agent": "^7.0.6",
+    "node-fetch": "^2.7.0",
+    "socks-proxy-agent": "^8.0.5",
     "typebox": "1.3.7"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/node-fetch": "^2.6.13",
     "typescript": "^5.9.0"
   }
 }

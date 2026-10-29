@@ -3,8 +3,11 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
+/** silky runs its own tmux server (`tmux -L <SOCKET>`), apart from the user's default one. */
+export const SOCKET = process.env.SILKY_TMUX_SOCKET || "silky";
+
 async function tmux(...args: string[]): Promise<string> {
-	const { stdout } = await exec("tmux", args);
+	const { stdout } = await exec("tmux", ["-L", SOCKET, ...args]);
 	return stdout;
 }
 

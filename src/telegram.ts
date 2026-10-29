@@ -2,12 +2,13 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { copyFile, rm } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
-import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
+import nodeFetch from "node-fetch";
 import { BIG_FILE, type Silky, type SilkyEvent, type Template } from "./core.ts";
 import { clip, escapeHtml, LONG_OUTPUT, markdownToHtml, oneLine, toolSummary } from "./format.ts";
 import { type Controller, Manager } from "./manager.ts";
+import { type Fetch, TelegramRoute } from "./net.ts";
 import { type Active, timestamp } from "./store.ts";
 
 const GATEWAY = "telegram";
@@ -65,12 +66,17 @@ export class TelegramGateway implements Controller {
 	private token: string;
 	/** A local Bot API server (TELEGRAM_API_ROOT) lifts Telegram's 20 MB download limit. */
 	private apiRoot: string;
+	/** Falls back to ~/.proxyaddr when Telegram is unreachable; a local API root needs none. */
+	readonly route?: TelegramRoute;
+	private fetch: Fetch;
 
 	constructor(silky: Silky, token: string, apiRoot = DEFAULT_API_ROOT) {
 		this.silky = silky;
 		this.token = token;
 		this.apiRoot = apiRoot.replace(/\/+$/, "");
-		this.bot = new Bot(token, { client: { apiRoot: this.apiRoot } });
+		if (this.apiRoot === DEFAULT_API_ROOT) this.route = new TelegramRoute();
+		this.fetch = this.route?.fetch ?? nodeFetch;
+		this.bot = new Bot(token, { client: { apiRoot: this.apiRoot, fetch: this.fetch as any } });
 		this.manager = new Manager(silky, this);
 		this.manager.onTool = (name, args) => this.statusTool(MANAGER_KEY, name, args);
 		silky.on((e) => void this.onEvent(e).catch((err) => console.error("event handling failed", err)));
@@ -333,9 +339,9 @@ export class TelegramGateway implements Controller {
 			// A local Bot API server in --local mode hands out a path on its own disk.
 			if (isAbsolute(file.file_path) && existsSync(file.file_path)) await copyFile(file.file_path, dest);
 			else {
-				const res = await fetch(`${this.apiRoot}/file/bot${this.token}/${file.file_path}`);
-				if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
-				await pipeline(Readable.fromWeb(res.body as any), createWriteStream(dest));
+				const res = await this.fetch(`${this.apiRoot}/file/bot${this.token}/${file.file_path}`);
+				if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+				await pipeline(res.body, createWriteStream(dest));
 			}
 		} catch (err) {
 			await rm(dest, { force: true });
