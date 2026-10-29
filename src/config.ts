@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,12 +16,14 @@ export interface Config {
 	pollMs: number;
 }
 
+/** SILKY_PI, else pi on PATH, else pi installed next to the node running silky (npm -g under nvm). */
 function findPi(): string {
 	if (process.env.SILKY_PI) return process.env.SILKY_PI;
 	try {
 		return execFileSync("which", ["pi"], { encoding: "utf8" }).trim();
 	} catch {
-		return "pi";
+		const sibling = join(dirname(process.execPath), "pi");
+		return existsSync(sibling) ? sibling : "pi";
 	}
 }
 

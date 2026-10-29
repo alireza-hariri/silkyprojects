@@ -21,7 +21,7 @@ const USAGE = `usage: silky <command>
                                   sync PROJECTS_DIR with a server (docs/sync.md);
                                   the server is remembered after the first run
 
-Environment: PROJECTS_DIR (required), SILKY_PI (pi binary, default: pi on PATH)`;
+Environment: PROJECTS_DIR (required), SILKY_PI (pi binary, default: pi on PATH, else next to node)`;
 
 async function main(argv: string[]): Promise<void> {
 	const [cmd, ...args] = argv;
