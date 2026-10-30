@@ -11,11 +11,12 @@ PREFIX="${SILKY_PREFIX:-$HOME/.local/share/silky}"
 BINDIR="${SILKY_BIN:-$HOME/.local/bin}"
 
 command -v curl >/dev/null 2>&1 || { echo "curl is required"; exit 1; }
-command -v node >/dev/null 2>&1 || { echo "node >= 24 is required (https://nodejs.org)"; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "node >= 22.20.0 is required (https://nodejs.org)"; exit 1; }
 command -v npm >/dev/null 2>&1 || { echo "npm is required"; exit 1; }
 
-major=$(node -p 'process.versions.node.split(".")[0]')
-[ "$major" -ge 24 ] || { echo "node >= 24 is required (found $(node -v))"; exit 1; }
+want=2220000
+have=$(node -p 'const [a,b,c]=process.versions.node.split(".").map(Number);a*1000000+b*1000+c')
+[ "$have" -ge "$want" ] || { echo "node >= 22.20.0 is required (found $(node -v))"; exit 1; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

@@ -8,7 +8,7 @@ Design: [docs/plan.md](docs/plan.md).
 
 ## Requirements
 
-- Node 24+ (TypeScript runs directly, no build step)
+- Node 22.20+ (TypeScript runs directly, no build step)
 - tmux 3.0+
 - [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) on `PATH`, with a model configured
 
