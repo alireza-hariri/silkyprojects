@@ -21,6 +21,8 @@ const USAGE = `usage: silky <command>
   sync [user@host:/path] [--dry-run] [--force]
                                   sync PROJECTS_DIR with a server (docs/sync.md);
                                   the server is remembered after the first run
+  update [--force]                update to the latest release (git checkout: git pull)
+  version                         print the version
 
 Environment: PROJECTS_DIR (required), SILKY_PI (pi binary, default: pi on PATH, else next to node)`;
 
@@ -30,6 +32,12 @@ async function main(argv: string[]): Promise<void> {
 	const [cmd, ...args] = argv;
 	if (!cmd || cmd === "help" || cmd === "--help") return console.log(USAGE);
 	if (cmd === "version" || cmd === "--version" || cmd === "-V") return console.log(`silky ${VERSION}`);
+
+	if (cmd === "update") {
+		const { update } = await import("./update.ts");
+		for (const a of args) if (a !== "--force") throw new Error(USAGE);
+		return update(VERSION, { force: args.includes("--force") });
+	}
 
 	if (cmd === "sync") {
 		const { sync } = await import("./sync.ts");

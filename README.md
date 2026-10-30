@@ -22,6 +22,9 @@ This downloads the latest release (or the `main` branch), installs dependencies,
 `silky` into `~/.local/bin`. Override the paths with `SILKY_PREFIX` and `SILKY_BIN`, e.g.
 `sudo env SILKY_PREFIX=/usr/local/share/silky SILKY_BIN=/usr/local/bin sh -c "$(curl -fsSL ...)"`.
 
+To update later, run `silky update` (`--force` reinstalls the latest release even if it is
+the same version; in a git checkout it runs `git pull`). Restart the daemon afterwards.
+
 ## Setup
 
 ```bash
