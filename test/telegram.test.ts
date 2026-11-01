@@ -22,7 +22,12 @@ after(() => {
 
 function setup() {
 	const silky = new Silky(loadConfig({ projectsDir: dir, piBin: join(ROOT, "test/fixtures/fake-pi"), pollMs: 50 }));
-	const gw = new TelegramGateway(silky, "123:fake");
+	const transcribed: any[] = [];
+	const fakeOpenRouter = async (url: any, init: any) => {
+		transcribed.push({ url, body: JSON.parse(init.body), auth: init.headers.Authorization });
+		return { ok: true, status: 200, json: async () => ({ text: `heard ${transcribed.length}` }) } as any;
+	};
+	const gw = new TelegramGateway(silky, "123:fake", undefined, { key: "or-key", model: "test/model", fetch: fakeOpenRouter });
 	gw.bot.botInfo = { id: 1, is_bot: true, first_name: "silky", username: "silky_bot" } as any;
 	const calls: { method: string; payload: any }[] = [];
 	let nextId = 100;
@@ -56,11 +61,11 @@ function setup() {
 		assert.ok(fn(), `timed out waiting for ${what}\n${texts().join("\n---\n")}`);
 	};
 	const lastKeyboard = () => calls.findLast((c) => c.payload.reply_markup?.inline_keyboard)!.payload.reply_markup.inline_keyboard;
-	return { silky, gw, calls, message, send, click, texts, until, lastKeyboard };
+	return { silky, gw, calls, message, send, click, texts, until, lastKeyboard, transcribed };
 }
 
 test("telegram gateway end to end", async () => {
-	const { silky, gw, calls, message, send, click, texts, until, lastKeyboard } = setup();
+	const { silky, gw, calls, message, send, click, texts, until, lastKeyboard, transcribed } = setup();
 	await silky.start();
 
 	await send("/status", 7);
@@ -93,6 +98,37 @@ test("telegram gateway end to end", async () => {
 	// Over 20 MB can't be downloaded through the public Bot API.
 	await message({ document: { file_id: "big", file_unique_id: "big", file_name: "movie.mp4", file_size: 30 * 1024 * 1024 } });
 	await until(() => texts().some((t) => t.includes("movie.mp4 is over 20 MB")), "big file refused");
+
+	// Forwarded messages are saved as usual, then the bot asks what to do with them.
+	const origin = { forward_origin: { type: "user", date: 0, sender_user: { id: 9, is_bot: false, first_name: "Sam" } } };
+	writeFileSync(join(dir, "fw.upload"), "pdf bytes");
+	await message({ ...origin, text: "meeting notes here" });
+	await message({ ...origin, text: "/not_a_command" });
+	await message({ ...origin, document: { file_id: "fw", file_unique_id: "fw", file_name: "report.pdf", file_size: 9 } });
+	await until(() => texts().some((t) => t.startsWith("I received 1 file and 2 messages. What should I do with them?")), "forward question");
+	assert.ok(texts().at(-1)!.includes("raw/assets/report.pdf (from Sam)"), "lists the saved path");
+	assert.equal(readFileSync(join(dir, p, "raw/assets/report.pdf"), "utf8"), "pdf bytes");
+	await send("summarize them");
+	await until(() => texts().some((t) => t.includes("summarize them") && t.includes("meeting notes here") && t.includes("Forwarded files (saved in the project)")), "forward context");
+	assert.ok(texts().some((t) => t.includes("From Sam:") && t.includes("/not_a_command")), "forwarded command kept as text");
+	await send("plain follow-up");
+	await until(() => texts().some((t) => t.includes("plain follow-up")), "follow-up");
+	assert.ok(!texts().at(-1)!.includes("meeting notes here"), "context is used once");
+
+	// Voice notes are transcribed through OpenRouter and sent on as text.
+	writeFileSync(join(dir, "vc.upload"), "ogg bytes");
+	await message({ voice: { file_id: "vc", file_unique_id: "vc", duration: 2, mime_type: "audio/ogg", file_size: 9 } });
+	await until(() => texts().some((t) => t.startsWith("🎙 <i>heard 1</i>")), "transcript shown");
+	await until(() => texts().some((t) => t.includes("echo(") && t.includes("heard 1")), "transcript sent to agent");
+	assert.equal(transcribed[0].url, "https://openrouter.ai/api/v1/audio/transcriptions");
+	assert.equal(transcribed[0].auth, "Bearer or-key");
+	assert.deepEqual(transcribed[0].body, { model: "test/model", input_audio: { data: Buffer.from("ogg bytes").toString("base64"), format: "ogg" } });
+	// A forwarded voice note counts as a message, in order with the forwarded texts.
+	await message({ ...origin, text: "before" });
+	await message({ ...origin, voice: { file_id: "vc", file_unique_id: "vc", duration: 2, file_size: 9 } });
+	await until(() => texts().some((t) => t.startsWith("I received 2 messages. What should I do with them?")), "forwarded voice question");
+	await send("reply please");
+	await until(() => texts().some((t) => t.includes("reply please") && /before[\s\S]*voice note, transcribed[\s\S]*heard 2/.test(t)), "forwarded voice context");
 
 	// A second agent becomes active; the first one's run finishes in the background.
 	await silky.send(p, `${p}-agent-1`, "SLEEP1 background");

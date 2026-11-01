@@ -1,20 +1,24 @@
 import { randomBytes } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
-import { copyFile, rm } from "node:fs/promises";
+import { copyFile, readFile, rm } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
+import type { MessageOrigin } from "grammy/types";
 import nodeFetch from "node-fetch";
 import { BIG_FILE, type Silky, type SilkyEvent, type Template } from "./core.ts";
 import { clip, escapeHtml, LONG_OUTPUT, markdownToHtml, oneLine, toolSummary } from "./format.ts";
 import { type Controller, Manager } from "./manager.ts";
 import { type Fetch, TelegramRoute } from "./net.ts";
 import { type Active, timestamp } from "./store.ts";
+import { transcribe } from "./transcribe.ts";
 
 const GATEWAY = "telegram";
 const STATUS_EDIT_MS = 1500;
 const MANAGER_KEY = "manager";
 const DEFAULT_API_ROOT = "https://api.telegram.org";
+/** Forwarding several messages arrives as separate updates; this long without one ends the batch. */
+const FORWARD_SETTLE_MS = 1500;
 
 const TEMPLATE_LABELS: [Template, string][] = [
 	["empty", "Empty folder"],
@@ -40,6 +44,23 @@ const COMMANDS = [
 	["status", "Projects, agents and unread runs"],
 	["manage", "Switch to manager mode"],
 ] as const;
+
+/** Forwarded messages waiting for the user to say what to do with them. */
+interface Forwarded {
+	messages: string[];
+	files: string[];
+	timer?: NodeJS.Timeout;
+	/** Saves and transcriptions run one at a time, in order, so same-named files never race for a path. */
+	saving: Promise<void>;
+}
+
+/** OpenRouter speech-to-text settings; without them voice notes are saved like any other file. */
+export interface VoiceOptions {
+	key: string;
+	model: string;
+	/** Defaults to the gateway's own route, which falls back to the proxy too. */
+	fetch?: Fetch;
+}
 
 interface StatusLine {
 	messageId?: number;
@@ -69,10 +90,13 @@ export class TelegramGateway implements Controller {
 	/** Falls back to ~/.proxyaddr when Telegram is unreachable; a local API root needs none. */
 	readonly route?: TelegramRoute;
 	private fetch: Fetch;
+	private forwarded: Forwarded = { messages: [], files: [], saving: Promise.resolve() };
+	private voice?: VoiceOptions;
 
-	constructor(silky: Silky, token: string, apiRoot = DEFAULT_API_ROOT) {
+	constructor(silky: Silky, token: string, apiRoot = DEFAULT_API_ROOT, voice?: VoiceOptions) {
 		this.silky = silky;
 		this.token = token;
+		this.voice = voice;
 		this.apiRoot = apiRoot.replace(/\/+$/, "");
 		if (this.apiRoot === DEFAULT_API_ROOT) this.route = new TelegramRoute();
 		this.fetch = this.route?.fetch ?? nodeFetch;
@@ -105,6 +129,9 @@ export class TelegramGateway implements Controller {
 			if (g.ownerId === undefined) return ctx.message?.text?.startsWith("/start") ? next() : undefined;
 			if (ctx.from?.id === g.ownerId) return next();
 		});
+
+		// Before the commands, so a forwarded "/something" is kept, not run.
+		bot.on("message:forward_origin", (ctx) => void this.onForward(ctx));
 
 		bot.command("start", (ctx) => this.cmdStart(ctx));
 		const guarded = (name: string, fn: (ctx: Context) => Promise<unknown>) =>
@@ -141,6 +168,11 @@ export class TelegramGateway implements Controller {
 			} catch (err) {
 				await this.sendHtml(`✗ ${escapeHtml(err instanceof Error ? err.message : String(err))}`);
 			}
+		});
+
+		bot.on("message:voice", (ctx, next) => {
+			if (!this.voice) return next();
+			void this.onVoice(ctx.message.voice.file_id).catch((err) => this.sendHtml(`✗ ${escapeHtml(String(err?.message ?? err))}`));
 		});
 
 		bot.on(["message:document", "message:photo", "message:video", "message:audio", "message:voice"], (ctx) => {
@@ -300,6 +332,7 @@ export class TelegramGateway implements Controller {
 	// ── Messages ─────────────────────────────────────────────────────────────
 
 	private async onText(text: string): Promise<void> {
+		text = await this.withForwarded(text);
 		await this.silky.reconcile();
 		const a = await this.active();
 		if (a.mode === "agent") {
@@ -323,6 +356,14 @@ export class TelegramGateway implements Controller {
 
 	/** Saves a received file into the active project; a caption is sent on to the agent along with the path. */
 	private async onFile(f: Incoming): Promise<void> {
+		const rel = await this.saveFile(f);
+		if (!rel) return;
+		await this.sendHtml(`📎 Saved to <code>${escapeHtml(rel)}</code>`);
+		if (f.caption) await this.onText(`${f.caption}\n\n(Attached file: ${rel})`);
+	}
+
+	/** Downloads a file into the active project and returns its project-relative path, or undefined when refused. */
+	private async saveFile(f: Incoming): Promise<string | undefined> {
 		await this.silky.reconcile();
 		const a = await this.active();
 		if (a.mode !== "agent") return void (await this.sendHtml("Files go to a project: pick one first with /proj."));
@@ -347,9 +388,86 @@ export class TelegramGateway implements Controller {
 			await rm(dest, { force: true });
 			throw err;
 		}
-		const rel = relative(this.silky.folder(a.project), dest);
-		await this.sendHtml(`📎 Saved to <code>${escapeHtml(rel)}</code>`);
-		if (f.caption) await this.onText(`${f.caption}\n\n(Attached file: ${rel})`);
+		return relative(this.silky.folder(a.project), dest);
+	}
+
+	/** Reads a small Telegram file, such as a voice note, into memory. */
+	private async download(fileId: string): Promise<Buffer> {
+		const file = await this.bot.api.getFile(fileId);
+		if (!file.file_path) throw new Error("Telegram returned no file path.");
+		if (isAbsolute(file.file_path) && existsSync(file.file_path)) return readFile(file.file_path);
+		const res = await this.fetch(`${this.apiRoot}/file/bot${this.token}/${file.file_path}`);
+		if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+		return Buffer.from(await res.arrayBuffer());
+	}
+
+	/** Telegram voice notes are OGG/Opus, which the default model takes as is. */
+	private async transcribeVoice(fileId: string): Promise<string> {
+		const v = this.voice!;
+		return transcribe({ key: v.key, model: v.model, fetch: v.fetch ?? this.fetch }, await this.download(fileId), "ogg");
+	}
+
+	/** Transcribes a voice note, shows the transcript, and sends it on like a typed message. */
+	private async onVoice(fileId: string): Promise<void> {
+		const text = await this.transcribeVoice(fileId);
+		if (!text) return void (await this.sendHtml("🎙 Couldn't make out any words in that voice note."));
+		await this.sendHtml(`🎙 <i>${escapeHtml(text)}</i>`);
+		await this.onText(text);
+	}
+
+	/** Collects a forwarded message; once the batch settles, asks what to do with it. */
+	private onForward(ctx: Context): void {
+		const m = ctx.message!;
+		const from = originName(m.forward_origin!);
+		const fw = this.forwarded;
+		const incoming = describeFile(ctx);
+		const step = (what: string, fn: () => Promise<void>) =>
+			(fw.saving = fw.saving.then(() =>
+				fn().catch(async (err) => void (await this.sendHtml(`✗ ${escapeHtml(what)}: ${escapeHtml(String(err?.message ?? err))}`).catch(() => {}))),
+			));
+		if (m.voice && this.voice) {
+			step("voice note", async () => {
+				const text = await this.transcribeVoice(m.voice!.file_id);
+				fw.messages.push(`From ${from} (voice note, transcribed):\n${text || "(no words heard)"}`);
+			});
+		} else if (incoming) {
+			step(incoming.name, async () => {
+				const rel = await this.saveFile(incoming);
+				if (rel) fw.files.push(incoming.caption ? `${rel} (from ${from}, caption: ${incoming.caption})` : `${rel} (from ${from})`);
+			});
+		} else if (m.text) {
+			// Through the chain too, so messages keep their order around voice notes.
+			step("message", async () => void fw.messages.push(`From ${from}:\n${m.text}`));
+		} else return;
+		clearTimeout(fw.timer);
+		fw.timer = setTimeout(() => void this.askForwarded().catch((err) => console.error("forward summary failed", err)), FORWARD_SETTLE_MS);
+	}
+
+	private async askForwarded(): Promise<void> {
+		const fw = this.forwarded;
+		fw.timer = undefined;
+		await fw.saving;
+		if (fw.timer || (!fw.files.length && !fw.messages.length)) return;
+		const count = (n: number, what: string) => (n ? `${n} ${what}${n > 1 ? "s" : ""}` : "");
+		const got = [count(fw.files.length, "file"), count(fw.messages.length, "message")].filter(Boolean).join(" and ");
+		const paths = fw.files.map((f) => `• <code>${escapeHtml(f)}</code>`).join("\n");
+		await this.sendHtml(`I received ${got}. What should I do with them?${paths ? `\n\n${paths}` : ""}`);
+	}
+
+	/** Puts any pending forwarded messages and file paths after the user's answer. */
+	private async withForwarded(text: string): Promise<string> {
+		const fw = this.forwarded;
+		// The answer may beat the summary: then there is no need to ask any more.
+		clearTimeout(fw.timer);
+		fw.timer = undefined;
+		await fw.saving;
+		if (!fw.files.length && !fw.messages.length) return text;
+		const parts = [text];
+		if (fw.messages.length) parts.push(`Forwarded messages:\n\n${fw.messages.join("\n\n---\n\n")}`);
+		if (fw.files.length) parts.push(`Forwarded files (saved in the project):\n${fw.files.map((f) => `- ${f}`).join("\n")}`);
+		fw.messages = [];
+		fw.files = [];
+		return parts.join("\n\n");
 	}
 
 	// ── Commands ─────────────────────────────────────────────────────────────
@@ -506,4 +624,17 @@ function describeFile(ctx: Context): Incoming | undefined {
 	const ext = f.mime_type?.split("/")[1]?.replace(/[^a-z0-9]/g, "") || "bin";
 	const name = ("file_name" in f && f.file_name) || `${m.voice ? "voice" : "file"}-${stamp}.${m.voice ? "ogg" : ext}`;
 	return { fileId: f.file_id, name, size: f.file_size ?? 0, caption };
+}
+
+function originName(o: MessageOrigin): string {
+	switch (o.type) {
+		case "user":
+			return [o.sender_user.first_name, o.sender_user.last_name].filter(Boolean).join(" ");
+		case "hidden_user":
+			return o.sender_user_name;
+		case "chat":
+			return ("title" in o.sender_chat && o.sender_chat.title) || "a chat";
+		case "channel":
+			return o.chat.title || "a channel";
+	}
 }

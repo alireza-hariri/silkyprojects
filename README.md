@@ -63,6 +63,11 @@ for example `· myproj / myproj-agent-2 ·`.
 - Answers over 3500 characters come as a short preview plus a `.md` file.
 - Files and photos you send are saved into the active project (see below). A caption is sent to
   the agent together with the saved path.
+- With `OPENROUTER_TRANSCRIPT_KEY` set, voice notes are transcribed through OpenRouter
+  (`OPENROUTER_TRANSCRIPT_MODEL`, default `microsoft/mai-transcribe-2`): you see the transcript,
+  and it goes to the agent or manager like a typed message. Without the key they are saved as files.
+- Forwarded messages (one or many at once) are collected: files are saved as above, then silky
+  asks what to do with them. Your answer is sent on with the forwarded texts and file paths.
 - `tmux -L silky attach -t <project>` shows a readable log of every run. silky runs its own tmux
   server on the `silky` socket (`SILKY_TMUX_SOCKET` to change it), so its sessions stay out of
   your default `tmux ls`.
