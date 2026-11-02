@@ -1,3 +1,4 @@
+import { exec } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { copyFile, readFile, rm } from "node:fs/promises";
@@ -42,6 +43,7 @@ const COMMANDS = [
 	["clear", "Start a fresh session"],
 	["stop", "Stop the current run"],
 	["status", "Projects, agents and unread runs"],
+	["bash", "Run a shell command in the active project"],
 	["manage", "Switch to manager mode"],
 ] as const;
 
@@ -154,6 +156,7 @@ export class TelegramGateway implements Controller {
 		guarded("clear", () => this.cmdClear());
 		guarded("stop", () => this.cmdStop());
 		guarded("status", () => this.cmdStatus());
+		guarded("bash", (ctx) => this.cmdBash(ctx));
 		guarded("manage", async () => this.sendHtml(escapeHtml(await this.setActive())));
 
 		bot.on("callback_query:data", async (ctx) => {
@@ -554,6 +557,30 @@ export class TelegramGateway implements Controller {
 		await this.sendHtml(`<pre>${escapeHtml(await this.status())}</pre>`);
 	}
 
+	private async cmdBash(ctx: Context): Promise<void> {
+		const command = String(ctx.match ?? "").trim();
+		if (!command) return void (await this.sendHtml("Usage: /bash &lt;command&gt;"));
+		// The middleware already gates the whole bot, but a shell command gets its own check.
+		const g = await this.silky.store.gateway(GATEWAY);
+		const uid = ctx.from?.id;
+		const allowed = uid !== undefined && (uid === g.ownerId || uid === Number(process.env.SILKY_OWNER_ID));
+		if (!allowed) return void (await this.sendHtml("✗ /bash is only for the owner."));
+		const a = await this.active();
+		if (a.mode !== "agent") return void (await this.sendHtml("Pick a project first with /proj."));
+		const cwd = this.silky.folder(a.project);
+		try {
+			const { stdout, stderr } = await run(command, cwd);
+			const out = [stdout, stderr].filter(Boolean).join("\n").trimEnd();
+			const body = out ? `<code>${escapeHtml(clip(out, 3500))}</code>` : "<i>(no output)</i>";
+			await this.sendHtml(`${body}\n\n<i>in ${escapeHtml(cwd)}</i>`, undefined, false);
+		} catch (err: any) {
+			const out = [err.stdout, err.stderr].filter(Boolean).join("\n").trimEnd();
+			const note = err.killed ? "timed out" : `exit ${err.code ?? "?"}`;
+			const body = out ? `<code>${escapeHtml(clip(out, 3500))}</code>` : "<i>(no output)</i>";
+			await this.sendHtml(`✗ ${escapeHtml(note)}\n${body}`, undefined, false);
+		}
+	}
+
 	// ── Controller: shared by commands and manager tools ─────────────────────
 
 	async status(): Promise<string> {
@@ -624,6 +651,18 @@ function describeFile(ctx: Context): Incoming | undefined {
 	const ext = f.mime_type?.split("/")[1]?.replace(/[^a-z0-9]/g, "") || "bin";
 	const name = ("file_name" in f && f.file_name) || `${m.voice ? "voice" : "file"}-${stamp}.${m.voice ? "ogg" : ext}`;
 	return { fileId: f.file_id, name, size: f.file_size ?? 0, caption };
+}
+
+const BASH_TIMEOUT_MS = 60_000;
+
+/** Runs a shell command with bash in `cwd` and captures stdout and stderr. */
+function run(command: string, cwd: string) {
+	return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+		exec(command, { cwd, timeout: BASH_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024, shell: "/bin/bash" }, (err, stdout, stderr) => {
+			if (err) return reject(err);
+			resolve({ stdout, stderr });
+		});
+	});
 }
 
 function originName(o: MessageOrigin): string {
