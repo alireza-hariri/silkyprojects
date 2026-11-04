@@ -33,16 +33,18 @@ async function main(argv: string[]): Promise<void> {
 	if (!cmd || cmd === "help" || cmd === "--help") return console.log(USAGE);
 	if (cmd === "version" || cmd === "--version" || cmd === "-V") return console.log(`silky ${VERSION}`);
 
+	const usageError = (msg: string) => new Error(`silky: ${msg}\n\n${USAGE}`);
+
 	if (cmd === "update") {
 		const { update } = await import("./update.ts");
-		for (const a of args) if (a !== "--force") throw new Error(USAGE);
+		for (const a of args) if (a !== "--force") throw usageError(`invalid flag '${a}' for 'update'`);
 		return update(VERSION, { force: args.includes("--force") });
 	}
 
 	if (cmd === "sync") {
 		const { sync } = await import("./sync.ts");
 		const flags = new Set(args.filter((a) => a.startsWith("--")));
-		for (const f of flags) if (f !== "--dry-run" && f !== "--force") throw new Error(USAGE);
+		for (const f of flags) if (f !== "--dry-run" && f !== "--force") throw usageError(`invalid flag '${f}' for 'sync'`);
 		return sync(loadConfig(), { remote: args.find((a) => !a.startsWith("--")), dryRun: flags.has("--dry-run"), force: flags.has("--force") });
 	}
 
@@ -53,7 +55,7 @@ async function main(argv: string[]): Promise<void> {
 	}
 
 	const need = (n: number) => {
-		if (args.length < n) throw new Error(USAGE);
+		if (args.length < n) throw usageError(`missing argument(s) for '${cmd}'`);
 	};
 	switch (cmd) {
 		case "status":
@@ -73,7 +75,7 @@ async function main(argv: string[]): Promise<void> {
 			need(1);
 			await silky.start();
 			const template = args[1] ?? "empty";
-			if (!(TEMPLATES as readonly string[]).includes(template)) throw new Error(USAGE);
+			if (!(TEMPLATES as readonly string[]).includes(template)) throw usageError(`unknown template '${template}' (expected: empty, git, git-data)`);
 			const { agent, existed } = await silky.createProject(args[0], template as Template);
 			console.log(`${existed ? "existing" : "created"} project ${args[0]}, agent ${agent}`);
 			break;
@@ -123,7 +125,7 @@ async function main(argv: string[]): Promise<void> {
 			console.log(`left: ${(await silky.archiveAgent(args[0], args[1])).join(", ") || "none"}`);
 			break;
 		default:
-			throw new Error(USAGE);
+			throw usageError(`unknown command '${cmd}'`);
 	}
 	silky.stopAll();
 }
