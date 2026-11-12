@@ -114,7 +114,9 @@ export function filters(p: Pick<Plan, "exclude" | "data">): string[] {
 	const rules = p.exclude.flatMap((e) =>
 		p.data.includes(e) ? [`--include=/${glob(e)}/`, `--include=/${glob(e)}/data/`, `--exclude=/${glob(e)}/*`] : [`--exclude=/${glob(e)}/`],
 	);
-	return [...rules, "--exclude=/.*", "--include=/*/", "--exclude=/*"];
+	// These directories hold large build/dependency artifacts that don't need to be synced.
+	const alwaysExcluded = ["node_modules", ".venv"];
+	return [...rules, ...alwaysExcluded.map((d) => `--exclude=**/${d}/`), "--exclude=/.*", "--include=/*/", "--exclude=/*"];
 }
 
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;

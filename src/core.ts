@@ -35,7 +35,9 @@ export type Template = (typeof TEMPLATES)[number];
 /** Files bigger than this go to `data/` (when the project has one) instead of `raw/assets/`, to keep them out of git. */
 export const BIG_FILE = 20 * 1024 * 1024;
 
-const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
+/** Valid project (and agent) folder name: letters, digits, '.', '_' or '-', starting with a letter or digit, at most 40 chars. */
+export const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
+export const PROJECT_NAME_HELP = "Project names use letters, digits, '.', '_' or '-', start with a letter or digit, and are at most 40 characters.";
 /** A run whose script hasn't written its pid file by then never started. */
 const START_GRACE_MS = 20_000;
 
@@ -210,7 +212,7 @@ export class Silky {
 	createProject(name: string, template: Template = "empty"): Promise<{ agent: string; existed: boolean }> {
 		return this.lock(async () => {
 			if (!PROJECT_NAME.test(name)) {
-				throw new Error("Project names use letters, digits, '.', '_' or '-', start with a letter or digit, and are at most 40 characters.");
+				throw new Error(PROJECT_NAME_HELP);
 			}
 			const existed = existsSync(this.folder(name));
 			if (!existed) await applyTemplate(this.folder(name), template);

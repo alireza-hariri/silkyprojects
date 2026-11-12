@@ -44,7 +44,7 @@ test("plan: pull shared repos, skip conflicts, copy one-sided repos", () => {
 	const local = new Map([["app", true], ["data", false], ["mix", false], ["mix/lib", true], ["mix/d", false], ["c", true], ["new", true]]);
 	const remote = new Map([["app", true], ["data", false], ["mix", false], ["mix/lib", true], ["c", false]]);
 	assert.deepEqual(plan(local, remote), { pull: ["app", "mix/lib"], exclude: ["app", "c", "mix/lib"], conflicts: ["c"], data: [] });
-	assert.deepEqual(filters({ exclude: ["a*b"], data: [] }), ["--exclude=/a\\*b/", "--exclude=/.*", "--include=/*/", "--exclude=/*"]);
+	assert.deepEqual(filters({ exclude: ["a*b"], data: [] }), ["--exclude=/a\\*b/", "--exclude=**/node_modules/", "--exclude=**/.venv/", "--exclude=/.*", "--include=/*/", "--exclude=/*"]);
 	local.set("app/data", false);
 	assert.deepEqual(plan(local, remote).data, ["app"]);
 	assert.deepEqual(parseRemote("me@box:/srv/p"), { host: "me@box", path: "/srv/p" });

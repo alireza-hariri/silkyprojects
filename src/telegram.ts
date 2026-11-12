@@ -7,7 +7,7 @@ import { pipeline } from "node:stream/promises";
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { MessageOrigin } from "grammy/types";
 import nodeFetch from "node-fetch";
-import { BIG_FILE, type Silky, type SilkyEvent, type Template } from "./core.ts";
+import { BIG_FILE, PROJECT_NAME, PROJECT_NAME_HELP, type Silky, type SilkyEvent, type Template } from "./core.ts";
 import { clip, escapeHtml, LONG_OUTPUT, markdownToHtml, oneLine, toolSummary } from "./format.ts";
 import { type Controller, Manager } from "./manager.ts";
 import { type Fetch, TelegramRoute } from "./net.ts";
@@ -93,6 +93,8 @@ export class TelegramGateway implements Controller {
 	readonly route?: TelegramRoute;
 	private fetch: Fetch;
 	private forwarded: Forwarded = { messages: [], files: [], saving: Promise.resolve() };
+	/** Set when /create_project is waiting for the user to type the project name in a plain message. */
+	private awaitingProjectName = false;
 	private voice?: VoiceOptions;
 
 	constructor(silky: Silky, token: string, apiRoot = DEFAULT_API_ROOT, voice?: VoiceOptions) {
@@ -186,6 +188,22 @@ export class TelegramGateway implements Controller {
 
 		bot.on("message:text", (ctx) => {
 			const text = ctx.message.text;
+			if (this.awaitingProjectName && !text.startsWith("/")) {
+				this.awaitingProjectName = false;
+				const name = text.trim();
+				if (!PROJECT_NAME.test(name)) {
+					this.awaitingProjectName = true;
+					return void this.sendHtml(`✗ ${escapeHtml(PROJECT_NAME_HELP)}\n\nType the name again, or /cancel to stop.`);
+				}
+				return void this.cmdCreateProject(name).catch((err) => this.sendHtml(`✗ ${escapeHtml(err instanceof Error ? err.message : String(err))}`));
+			}
+			if (text.startsWith("/")) {
+				if (text === "/cancel" && this.awaitingProjectName) {
+					this.awaitingProjectName = false;
+					return void this.sendHtml("Cancelled.");
+				}
+				this.awaitingProjectName = false;
+			}
 			if (text.startsWith("/")) return this.sendHtml(`Unknown command. Try ${COMMANDS.map(([c]) => `/${c}`).join(" ")}`);
 			void this.onText(text).catch((err) => this.sendHtml(`✗ ${escapeHtml(String(err?.message ?? err))}`));
 		});
@@ -494,7 +512,11 @@ export class TelegramGateway implements Controller {
 	}
 
 	private async cmdCreateProject(name: string): Promise<void> {
-		if (!name) return void (await this.sendHtml("Usage: /create_project &lt;name&gt;"));
+		if (!name) {
+			this.awaitingProjectName = true;
+			return void (await this.sendHtml("What should the project be called? Send the name as a plain message, or /cancel to stop."));
+		}
+		if (!PROJECT_NAME.test(name)) return void (await this.sendHtml(`✗ ${escapeHtml(PROJECT_NAME_HELP)}`));
 		// An existing folder is adopted as is, so there is nothing to choose.
 		if (this.silky.projectExists(name)) return void (await this.sendHtml(escapeHtml(await this.createProject(name))));
 		const buttons = TEMPLATE_LABELS.map(([t, label]) => this.button(label, async () => void (await this.sendHtml(escapeHtml(await this.createProject(name, t))))));
