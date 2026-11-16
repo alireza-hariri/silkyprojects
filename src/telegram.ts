@@ -1,5 +1,5 @@
-import { exec } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { exec, spawn } from "node:child_process";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { copyFile, readFile, rm } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
@@ -95,6 +95,8 @@ export class TelegramGateway implements Controller {
 	private forwarded: Forwarded = { messages: [], files: [], saving: Promise.resolve() };
 	/** Set when /create_project is waiting for the user to type the project name in a plain message. */
 	private awaitingProjectName = false;
+	/** Set when a /bash command needs sudo: first the silly gate password, then the sudo one. */
+	private sudoFlow?: { command: string; cwd: string; step: "silly" | "sudo"; promptMsgId?: number };
 	private voice?: VoiceOptions;
 
 	constructor(silky: Silky, token: string, apiRoot = DEFAULT_API_ROOT, voice?: VoiceOptions) {
@@ -188,6 +190,11 @@ export class TelegramGateway implements Controller {
 
 		bot.on("message:text", (ctx) => {
 			const text = ctx.message.text;
+			// A pending sudo run swallows plain messages as passwords, so they never reach the agents.
+			if (this.sudoFlow && !text.startsWith("/")) {
+				const msgId = ctx.message.message_id;
+				return void this.onSudoPassword(text, msgId).catch((err) => this.sendHtml(`✗ ${escapeHtml(String(err?.message ?? err))}`));
+			}
 			if (this.awaitingProjectName && !text.startsWith("/")) {
 				this.awaitingProjectName = false;
 				const name = text.trim();
@@ -590,11 +597,61 @@ export class TelegramGateway implements Controller {
 		const a = await this.active();
 		if (a.mode !== "agent") return void (await this.sendHtml("Pick a project first with /proj."));
 		const cwd = this.silky.folder(a.project);
+		if (/\bsudo\b/.test(command)) return void (await this.startSudo(command, cwd, ctx.message?.message_id));
 		try {
 			const { stdout, stderr } = await run(command, cwd);
 			const out = [stdout, stderr].filter(Boolean).join("\n").trimEnd();
 			const body = out ? `<code>${escapeHtml(clip(out, 3500))}</code>` : "<i>(no output)</i>";
 			await this.sendHtml(`${body}\n\n<i>in ${escapeHtml(cwd)}</i>`, undefined, false);
+		} catch (err: any) {
+			const out = [err.stdout, err.stderr].filter(Boolean).join("\n").trimEnd();
+			const note = err.killed ? "timed out" : `exit ${err.code ?? "?"}`;
+			const body = out ? `<code>${escapeHtml(clip(out, 3500))}</code>` : "<i>(no output)</i>";
+			await this.sendHtml(`✗ ${escapeHtml(note)}\n${body}`, undefined, false);
+		}
+	}
+
+	// ── Sudo: two-password gate for /bash commands that call sudo ────────────
+
+	/** Asks for the silly password; nothing about the command or its output is said until both land. */
+	private async startSudo(command: string, cwd: string, userMsgId?: number): Promise<void> {
+		if (!process.env.SILKY_PASSWORD) return void (await this.sendHtml("✗ SILKY_PASSWORD is not set, so sudo commands are refused."));
+		// Set the flow first, so even a fast reply is caught as a password, never passed on.
+		this.sudoFlow = { command, cwd, step: "silly" };
+		// Drop sudo's cached timestamp so it prompts this run for sure.
+		await new Promise<void>((done) => exec("sudo -K", () => done()));
+		const id = await this.sendHtml("🔒 <i>Sudo command.</i> Reply with the <b>silly</b> password (your message is deleted right away).", undefined, false);
+		if (this.sudoFlow) this.sudoFlow.promptMsgId = id;
+	}
+
+	/** Eats one password message: deletes it, then asks for the sudo password or runs the command. */
+	private async onSudoPassword(text: string, messageId: number): Promise<void> {
+		const flow = this.sudoFlow;
+		if (!flow) return;
+		const chat = await this.chatId();
+		const drop = (id?: number) => (chat && id ? this.bot.api.deleteMessage(chat, id).catch(() => {}) : Promise.resolve());
+		await drop(messageId); // the password message leaves the chat at once
+		if (flow.step === "silly") {
+			if (!sameSecret(text, process.env.SILKY_PASSWORD)) {
+				this.sudoFlow = undefined;
+				await drop(flow.promptMsgId);
+				return void (await this.sendHtml("✗ Wrong silly password. Cancelled.", undefined, false));
+			}
+			flow.step = "sudo";
+			await drop(flow.promptMsgId);
+			flow.promptMsgId = await this.sendHtml("🔒 Silly password accepted. Now reply with the <b>sudo</b> password.", undefined, false);
+			return;
+		}
+		// Sudo step: take the password, clear the flow, run. The password lives only in this call.
+		const { command, cwd, promptMsgId } = flow;
+		this.sudoFlow = undefined;
+		await drop(promptMsgId);
+		await this.sendHtml(`⏳ Running with sudo: <code>${escapeHtml(clip(command, 300))}</code>\n\n<i>in ${escapeHtml(cwd)}</i>`, undefined, false);
+		try {
+			const { stdout, stderr } = await runSudo(command, cwd, text);
+			const out = [stdout, stderr].filter(Boolean).join("\n").trimEnd();
+			const body = out ? `<code>${escapeHtml(clip(out, 3500))}</code>` : "<i>(no output)</i>";
+			await this.sendHtml(`✓ ${body}`, undefined, false);
 		} catch (err: any) {
 			const out = [err.stdout, err.stderr].filter(Boolean).join("\n").trimEnd();
 			const note = err.killed ? "timed out" : `exit ${err.code ?? "?"}`;
@@ -676,6 +733,36 @@ function describeFile(ctx: Context): Incoming | undefined {
 }
 
 const BASH_TIMEOUT_MS = 60_000;
+
+/** The whole command runs under one `sudo -S`, fed the password on stdin (prompt silenced). */
+function runSudo(command: string, cwd: string, password: string) {
+	return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+		const child = spawn("sudo", ["-S", "-p", "", "bash", "-c", command], { cwd, timeout: BASH_TIMEOUT_MS });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (d) => void (stdout += d));
+		child.stderr.on("data", (d) => void (stderr += d));
+		child.stdin.end(password + "\n");
+		child.on("error", reject);
+		child.on("close", (code, signal) => {
+			if (code === 0) return resolve({ stdout, stderr });
+			const err = new Error(`exit ${code ?? "?"}`) as Error & { stdout: string; stderr: string; code: number | null; killed: boolean };
+			err.stdout = stdout;
+			err.stderr = stderr;
+			err.code = code;
+			err.killed = signal === "SIGTERM";
+			reject(err);
+		});
+	});
+}
+
+/** Same length plus constant-time compare, so a wrong guess can't be timed. */
+function sameSecret(a: string, b?: string): boolean {
+	if (!b) return false;
+	const ab = Buffer.from(a);
+	const bb = Buffer.from(b);
+	return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
 
 /** Runs a shell command with bash in `cwd` and captures stdout and stderr. */
 function run(command: string, cwd: string) {
