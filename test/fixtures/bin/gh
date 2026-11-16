@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Stand-in for gh: "GitHub" repos are bare git repos under $FAKE_GH, owner "me".
+[ -n "$FAKE_GH" ] || exit 1
+case "$1 $2" in
+"auth status") ;;
+"api user") echo me ;;
+"config get") echo https ;;
+"repo create") git init -q --bare "$FAKE_GH/${3#*/}.git" ;;
+"repo view") u="$FAKE_GH/${3#*/}.git"; printf '{"url":"%s","sshUrl":"%s"}\n' "$u" "$u" ;;
+*) exit 1 ;;
+esac

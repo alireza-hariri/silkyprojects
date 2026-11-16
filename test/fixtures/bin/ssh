@@ -9,4 +9,6 @@ while [ $# -gt 0 ]; do
 	esac
 done
 shift
+# Origins under $FAKE_DENY can't be read from the "server".
+if [ -n "$FAKE_DENY" ]; then export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url./nonexistent$FAKE_DENY.insteadOf" GIT_CONFIG_VALUE_0="$FAKE_DENY"; fi
 exec sh -c "$*"
